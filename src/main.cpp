@@ -27,12 +27,19 @@ void print_usage() {
       "mirage - postgres-wire honeypot\n"
       "\n"
       "Usage: mirage [options]\n"
-      "  --host HOST            bind address (default 127.0.0.1)\n"
-      "  --port PORT            bind port (default 55432)\n"
-      "  --workers N            worker threads (default 4)\n"
-      "  --audit-log PATH       jsonl output path (default ./audit.jsonl)\n"
-      "  --auth-mode MODE       collect|accept (default collect)\n"
-      "  --help                 show this message\n";
+      "  --host HOST                  bind address (default 127.0.0.1; use :: for v6 dual-stack)\n"
+      "  --port PORT                  bind port (default 55432)\n"
+      "  --workers N                  worker threads (default 4)\n"
+      "  --audit-log PATH             jsonl output path (default ./audit.jsonl)\n"
+      "  --auth-mode MODE             collect|accept (default collect)\n"
+      "  --detect-conn-rate N         alert when an IP exceeds N connections in window (default 10)\n"
+      "  --detect-conn-window SECS    connection-rate window in seconds (default 60)\n"
+      "  --detect-spray-users N       alert at >N distinct usernames per IP (default 5)\n"
+      "  --detect-spray-window SECS   auth-spray window in seconds (default 300)\n"
+      "  --ratelimit-burst N          token-bucket burst capacity per IP (default 20)\n"
+      "  --ratelimit-refill RATE      refill rate per second per IP (default 5.0)\n"
+      "  --no-ratelimit               disable accept-layer rate limiter\n"
+      "  --help                       show this message\n";
 }
 
 bool starts_with(const std::string& s, const std::string& p) {
@@ -43,6 +50,7 @@ bool starts_with(const std::string& s, const std::string& p) {
 
 int main(int argc, char** argv) {
     mirage::server::Config cfg;
+    mirage::detect::Thresholds thresholds;
     std::string audit_path = "audit.jsonl";
 
     for (int i = 1; i < argc; ++i) {
@@ -65,6 +73,29 @@ int main(int argc, char** argv) {
             else if (mode == "accept") cfg.session.auth_mode = mirage::session::AuthMode::Accept;
             else { std::cerr << "unknown auth mode: " << mode << "\n"; return 2; }
         }
+        else if (a == "--detect-conn-rate") {
+            thresholds.connection_rate = std::atoi(next("--detect-conn-rate").c_str());
+        }
+        else if (a == "--detect-conn-window") {
+            thresholds.connection_window =
+                std::chrono::seconds(std::atoi(next("--detect-conn-window").c_str()));
+        }
+        else if (a == "--detect-spray-users") {
+            thresholds.auth_spray_users = std::atoi(next("--detect-spray-users").c_str());
+        }
+        else if (a == "--detect-spray-window") {
+            thresholds.auth_spray_window =
+                std::chrono::seconds(std::atoi(next("--detect-spray-window").c_str()));
+        }
+        else if (a == "--ratelimit-burst") {
+            cfg.ratelimit.burst = std::atoi(next("--ratelimit-burst").c_str());
+        }
+        else if (a == "--ratelimit-refill") {
+            cfg.ratelimit.refill_per_sec = std::atof(next("--ratelimit-refill").c_str());
+        }
+        else if (a == "--no-ratelimit") {
+            cfg.ratelimit_enabled = false;
+        }
         else if (starts_with(a, "--")) {
             std::cerr << "unknown option: " << a << "\n";
             print_usage();
@@ -77,7 +108,7 @@ int main(int argc, char** argv) {
         std::cerr << "failed to open audit log: " << audit_path << "\n";
         return 1;
     }
-    auto detector = std::make_shared<mirage::detect::Detector>();
+    auto detector = std::make_shared<mirage::detect::Detector>(thresholds);
     auto pipeline = std::make_shared<mirage::audit::AuditPipeline>(sink, detector);
     pipeline->start();
 
