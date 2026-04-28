@@ -14,6 +14,7 @@ const char* kind_name(EventKind k) {
         case EventKind::Terminate:          return "terminate";
         case EventKind::ConnectionAccepted: return "conn_open";
         case EventKind::ConnectionClosed:   return "conn_close";
+        case EventKind::RateLimitDrop:      return "ratelimit_drop";
     }
     return "unknown";
 }

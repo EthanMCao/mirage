@@ -20,6 +20,7 @@ enum class EventKind {
     Terminate,
     ConnectionAccepted,
     ConnectionClosed,
+    RateLimitDrop,
 };
 
 struct Event {
