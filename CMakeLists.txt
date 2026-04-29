@@ -21,6 +21,7 @@ add_library(mirage_core STATIC
   src/wire_protocol.cpp
   src/logging.cpp
   src/detection.cpp
+  src/ratelimit.cpp
   src/audit.cpp
   src/session.cpp
   src/server.cpp
@@ -31,6 +32,9 @@ target_link_libraries(mirage_core PUBLIC Threads::Threads)
 
 add_executable(mirage src/main.cpp)
 target_link_libraries(mirage PRIVATE mirage_core)
+
+add_executable(connection_storm bench/connection_storm.cpp)
+target_link_libraries(connection_storm PRIVATE Threads::Threads)
 
 enable_testing()
 add_subdirectory(tests)
