@@ -1,0 +1,56 @@
+<!--
+  Wazuh rules for Mirage. Levels follow the Wazuh convention:
+    3   informational
+    5   noteworthy / single-event signal
+    10  notable behavior across a window
+    12  attack pattern, page on-call
+
+  Drop into /var/ossec/etc/rules/local_rules.xml on the manager.
+-->
+<group name="mirage,honeypot,">
+
+  <rule id="100100" level="3">
+    <decoded_as>mirage-json</decoded_as>
+    <description>Mirage honeypot event (parent rule).</description>
+  </rule>
+
+  <rule id="100110" level="5">
+    <if_sid>100100</if_sid>
+    <field name="event">^password$</field>
+    <description>Mirage: credential harvested ($(user)@$(src_ip))</description>
+  </rule>
+
+  <rule id="100120" level="5">
+    <if_sid>100100</if_sid>
+    <field name="event">^query$</field>
+    <description>Mirage: query observed ($(user)@$(src_ip))</description>
+  </rule>
+
+  <rule id="100130" level="10">
+    <if_sid>100100</if_sid>
+    <field name="event">^detection$</field>
+    <field name="rule">^conn_rate_spike$</field>
+    <description>Mirage: connection-rate spike from $(src_ip) ($(count) in $(window_s)s)</description>
+  </rule>
+
+  <rule id="100131" level="10">
+    <if_sid>100100</if_sid>
+    <field name="event">^detection$</field>
+    <field name="rule">^auth_spray$</field>
+    <description>Mirage: authentication spray from $(src_ip) ($(count) distinct usernames)</description>
+  </rule>
+
+  <rule id="100132" level="12">
+    <if_sid>100100</if_sid>
+    <field name="event">^detection$</field>
+    <field name="rule">^suspicious_query$</field>
+    <description>Mirage: catalog-targeting query from $(src_ip) ($(user))</description>
+  </rule>
+
+  <rule id="100140" level="5">
+    <if_sid>100100</if_sid>
+    <field name="event">^ratelimit_drop$</field>
+    <description>Mirage: connection dropped at accept layer for $(src_ip)</description>
+  </rule>
+
+</group>

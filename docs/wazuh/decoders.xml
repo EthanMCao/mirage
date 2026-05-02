@@ -1,0 +1,29 @@
+<!--
+  Wazuh decoder for Mirage JSONL audit events.
+  Drop into /var/ossec/etc/decoders/local_decoder.xml on the manager and
+  reload (`/var/ossec/bin/wazuh-control restart`).
+-->
+<decoder name="mirage-json">
+  <prematch>^\{</prematch>
+  <plugin_decoder>JSON_Decoder</plugin_decoder>
+</decoder>
+
+<!--
+  All Mirage events carry an "event" field. The parent decoder above does
+  the JSON parsing; the children below are not strictly required (the JSON
+  decoder auto-extracts every field) but make the rule files easier to read.
+-->
+<decoder name="mirage-detection">
+  <parent>mirage-json</parent>
+  <regex>"event":"detection"</regex>
+</decoder>
+
+<decoder name="mirage-ratelimit-drop">
+  <parent>mirage-json</parent>
+  <regex>"event":"ratelimit_drop"</regex>
+</decoder>
+
+<decoder name="mirage-password">
+  <parent>mirage-json</parent>
+  <regex>"event":"password"</regex>
+</decoder>
