@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        build_type: [Release, Debug]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  fuzz-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Configure fuzz build
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake -S . -B build-fuzz -DMIRAGE_FUZZ=ON -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build fuzzers
+        run: cmake --build build-fuzz -j --target fuzz_wire_protocol
+
+      - name: Smoke run (5s per fuzzer)
+        run: ./build-fuzz/fuzz/fuzz_wire_protocol -max_total_time=5 -print_final_stats=1
