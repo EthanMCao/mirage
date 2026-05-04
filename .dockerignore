@@ -1,0 +1,13 @@
+.git
+.github
+build/
+build-*/
+cmake-build-*/
+docs/
+scripts/
+README.md
+LICENSE
+*.jsonl
+.DS_Store
+.vscode
+.idea
