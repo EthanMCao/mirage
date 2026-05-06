@@ -15,6 +15,18 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
   add_compile_options(-O2)
 endif()
 
+# Fuzzing build: instrument every translation unit so libFuzzer + ASan can
+# observe coverage across mirage_core. The actual fuzzer target lives under
+# fuzz/ and adds -fsanitize=fuzzer for the runtime.
+option(MIRAGE_FUZZ "Build libFuzzer harnesses (clang only)" OFF)
+if(MIRAGE_FUZZ)
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "MIRAGE_FUZZ=ON requires clang")
+  endif()
+  add_compile_options(-fsanitize=fuzzer-no-link,address -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=fuzzer-no-link,address)
+endif()
+
 find_package(Threads REQUIRED)
 
 add_library(mirage_core STATIC
@@ -38,3 +50,7 @@ target_link_libraries(connection_storm PRIVATE Threads::Threads)
 
 enable_testing()
 add_subdirectory(tests)
+
+if(MIRAGE_FUZZ)
+  add_subdirectory(fuzz)
+endif()
