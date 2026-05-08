@@ -19,18 +19,22 @@ unpatched CVEs. Putting a Postgres honeypot in front of them means:
 
 ## What it does
 
-- Listens on a TCP port and speaks Postgres protocol v3 (the same protocol
-  `psql` and every Postgres client uses).
+- Listens on a TCP port (IPv4 or IPv6 dual-stack) and speaks Postgres
+  protocol v3 — the same protocol `psql` and every Postgres client uses.
 - Accepts a `StartupMessage`, requests cleartext password, harvests the
   attempt, and returns either an authentication failure or a fake success
   (configurable).
-- For sessions that "log in," responds to simple queries with empty result
-  sets so the attacker's client (and they) keep talking.
+- For sessions that "log in," responds to simple queries with canned
+  one-row results so the attacker's client keeps talking.
+- A per-IP token-bucket rate limiter at the accept layer drops abusive
+  source IPs *before* any wire-protocol work runs.
 - Pushes every event onto an in-process audit queue consumed by a dedicated
   detection thread.
 - Detection thread runs sliding-window rules (connection-rate spikes, auth
   spray across users, suspicious-query keywords) and emits Wazuh-compatible
-  JSONL.
+  JSONL. Decoders and rules are checked in under [`docs/wazuh/`](docs/wazuh).
+- Sustains ~30k full sessions/sec on a single Apple M3 Pro at zero failure
+  — see [`docs/BENCHMARK.md`](docs/BENCHMARK.md).
 
 ## Architecture
 
@@ -78,8 +82,14 @@ CMake 3.16+, a C++17 compiler, and POSIX sockets (Linux or macOS).
 # Default: listen on 127.0.0.1:55432, four worker threads, audit log to ./audit.jsonl
 ./build/mirage
 
-# Custom
-./build/mirage --host 0.0.0.0 --port 5432 --workers 8 --audit-log /var/log/mirage.jsonl
+# Custom: dual-stack IPv6, 8 workers, tighter detection thresholds
+./build/mirage \
+  --host :: --port 5432 --workers 8 \
+  --audit-log /var/log/mirage.jsonl \
+  --detect-conn-rate 5 --detect-spray-users 3 \
+  --ratelimit-burst 10 --ratelimit-refill 2
+
+./build/mirage --help
 ```
 
 Smoke test with `psql`:
@@ -97,7 +107,11 @@ tail -f audit.jsonl
 | `auth_spray`      | 300s   | a single source IP attempts > 5 distinct usernames      |
 | `suspicious_query`| n/a    | a query touches `pg_shadow`, `pg_authid`, `pg_user`, or `information_schema.user_*` |
 
-All thresholds live in `include/mirage/detection.hpp` and are easy to tune.
+All thresholds are tunable via CLI flags (`--detect-conn-rate`,
+`--detect-conn-window`, `--detect-spray-users`, `--detect-spray-window`)
+and have safe defaults in `include/mirage/detection.hpp`. Detection rules
+*alert* — the per-IP token-bucket rate limiter is what *drops* abusive
+traffic at the accept layer.
 
 ## Audit log format
 
