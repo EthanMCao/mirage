@@ -24,8 +24,10 @@ unpatched CVEs. Putting a Postgres honeypot in front of them means:
 - Accepts a `StartupMessage`, requests cleartext password, harvests the
   attempt, and returns either an authentication failure or a fake success
   (configurable).
-- For sessions that "log in," responds to simple queries with canned
-  one-row results so the attacker's client keeps talking.
+- For sessions that "log in," handles both the simple-query (`Q`) and
+  the extended-query (`Parse`/`Bind`/`Describe`/`Execute`/`Sync`/`Close`)
+  flows with canned one-row results, so libpq-based clients and ORMs
+  keep talking past the first round trip.
 - A per-IP token-bucket rate limiter at the accept layer drops abusive
   source IPs *before* any wire-protocol work runs.
 - Pushes every event onto an in-process audit queue consumed by a dedicated
@@ -75,6 +77,24 @@ cmake --build build -j
 ```
 
 CMake 3.16+, a C++17 compiler, and POSIX sockets (Linux or macOS).
+
+### Docker
+
+```sh
+docker build -t mirage .
+docker run --rm -p 55432:55432 -v $PWD/audit:/home/mirage mirage
+```
+
+### Fuzzing
+
+The wire-protocol parser has a libFuzzer harness; built only with clang.
+
+```sh
+CC=clang CXX=clang++ cmake -S . -B build-fuzz \
+  -DMIRAGE_FUZZ=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-fuzz -j --target fuzz_wire_protocol
+./build-fuzz/fuzz/fuzz_wire_protocol -max_total_time=60
+```
 
 ## Run
 
@@ -130,8 +150,11 @@ One JSON object per line; compatible with Wazuh's `localfile` JSON decoder.
 ctest --test-dir build --output-on-failure
 ```
 
-Unit tests cover the wire-protocol message parser and the detection
-sliding-window logic.
+Suites cover the wire-protocol parser (simple + extended messages and
+all backend frame builders), the detection sliding-window logic, the
+per-IP rate limiter, and end-to-end `Session::run()` flows over a
+socket pair (collect mode, accept mode, SSL decline, extended query,
+EOF during startup).
 
 ## Status
 
