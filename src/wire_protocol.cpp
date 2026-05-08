@@ -135,6 +135,32 @@ std::optional<FrontendMessage> read_frontend(int fd) {
         case 'X':
             msg.type = FrontendType::Terminate;
             return msg;
+        case 'P':  // Parse
+            msg.type = FrontendType::Parse;
+            msg.payload.assign(body.begin(), body.end());
+            return msg;
+        case 'B':  // Bind
+            msg.type = FrontendType::Bind;
+            msg.payload.assign(body.begin(), body.end());
+            return msg;
+        case 'D':  // Describe
+            msg.type = FrontendType::Describe;
+            msg.payload.assign(body.begin(), body.end());
+            return msg;
+        case 'E':  // Execute
+            msg.type = FrontendType::Execute;
+            msg.payload.assign(body.begin(), body.end());
+            return msg;
+        case 'C':  // Close
+            msg.type = FrontendType::Close;
+            msg.payload.assign(body.begin(), body.end());
+            return msg;
+        case 'S':  // Sync
+            msg.type = FrontendType::Sync;
+            return msg;
+        case 'H':  // Flush
+            msg.type = FrontendType::Flush;
+            return msg;
         default:
             msg.type = FrontendType::Unknown;
             msg.payload.assign(body.begin(), body.end());
@@ -204,11 +230,7 @@ std::vector<uint8_t> error_response(const std::string& severity,
     return frame('E', body);
 }
 
-std::vector<uint8_t> single_text_row(const std::string& column_name,
-                                     const std::string& value) {
-    std::vector<uint8_t> result;
-
-    // RowDescription ('T'): one column of type text (oid 25).
+std::vector<uint8_t> row_description_text(const std::string& column_name) {
     std::vector<uint8_t> desc;
     write_be16(desc, 1);  // field count
     write_cstring(desc, column_name);
@@ -218,20 +240,40 @@ std::vector<uint8_t> single_text_row(const std::string& column_name,
     write_be16(desc, -1);  // type size (variable)
     write_be32(desc, -1);  // type modifier
     write_be16(desc, 0);   // format code: text
-    auto desc_frame = frame('T', desc);
-    result.insert(result.end(), desc_frame.begin(), desc_frame.end());
+    return frame('T', desc);
+}
 
-    // DataRow ('D'): one column.
+std::vector<uint8_t> data_row_single_text(const std::string& value) {
     std::vector<uint8_t> row;
     write_be16(row, 1);
     write_be32(row, static_cast<int32_t>(value.size()));
     row.insert(row.end(), value.begin(), value.end());
-    auto row_frame = frame('D', row);
-    result.insert(result.end(), row_frame.begin(), row_frame.end());
+    return frame('D', row);
+}
 
+std::vector<uint8_t> single_text_row(const std::string& column_name,
+                                     const std::string& value) {
+    std::vector<uint8_t> result;
+    auto desc = row_description_text(column_name);
+    result.insert(result.end(), desc.begin(), desc.end());
+    auto row = data_row_single_text(value);
+    result.insert(result.end(), row.begin(), row.end());
     auto cc = command_complete("SELECT 1");
     result.insert(result.end(), cc.begin(), cc.end());
     return result;
+}
+
+std::vector<uint8_t> parse_complete()    { return frame('1', {}); }
+std::vector<uint8_t> bind_complete()     { return frame('2', {}); }
+std::vector<uint8_t> close_complete()    { return frame('3', {}); }
+std::vector<uint8_t> no_data()           { return frame('n', {}); }
+std::vector<uint8_t> portal_suspended()  { return frame('s', {}); }
+
+std::vector<uint8_t> parameter_description(const std::vector<int32_t>& oids) {
+    std::vector<uint8_t> body;
+    write_be16(body, static_cast<int16_t>(oids.size()));
+    for (int32_t oid : oids) write_be32(body, oid);
+    return frame('t', body);
 }
 
 bool write_all(int fd, const std::vector<uint8_t>& bytes) {

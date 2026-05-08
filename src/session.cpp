@@ -4,8 +4,10 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <cstring>
 #include <random>
 #include <string>
+#include <unordered_map>
 
 #include "mirage/wire_protocol.hpp"
 
@@ -57,6 +59,71 @@ void serve_query(int fd, const std::string& sql) {
         write_all(fd, single_text_row("?column?", "1"));
     }
     write_all(fd, ready_for_query('I'));
+}
+
+// Read a NUL-terminated string starting at offset i. On success, advances i
+// past the NUL and returns true. On EOF before NUL, leaves i unchanged.
+bool read_cstring(const std::string& body, size_t& i, std::string& out) {
+    size_t start = i;
+    while (i < body.size() && body[i] != '\0') ++i;
+    if (i >= body.size()) return false;
+    out.assign(body, start, i - start);
+    ++i;  // skip NUL
+    return true;
+}
+
+// Parse messages we care about have small, well-defined heads — extract just
+// the fields the honeypot uses for audit + dispatch and ignore the rest.
+struct ParseHead { std::string statement_name; std::string query; };
+struct BindHead  { std::string portal_name;    std::string statement_name; };
+struct DescHead  { uint8_t kind = 0;           std::string name; };  // 'S' or 'P'
+struct ExecHead  { std::string portal_name; };
+struct CloseHead { uint8_t kind = 0;           std::string name; };
+
+bool parse_parse(const std::string& body, ParseHead& out) {
+    size_t i = 0;
+    if (!read_cstring(body, i, out.statement_name)) return false;
+    if (!read_cstring(body, i, out.query)) return false;
+    return true;
+}
+
+bool parse_bind(const std::string& body, BindHead& out) {
+    size_t i = 0;
+    if (!read_cstring(body, i, out.portal_name)) return false;
+    if (!read_cstring(body, i, out.statement_name)) return false;
+    return true;
+}
+
+bool parse_describe(const std::string& body, DescHead& out) {
+    if (body.empty()) return false;
+    out.kind = static_cast<uint8_t>(body[0]);
+    size_t i = 1;
+    return read_cstring(body, i, out.name);
+}
+
+bool parse_execute(const std::string& body, ExecHead& out) {
+    size_t i = 0;
+    return read_cstring(body, i, out.portal_name);
+    // trailing int32 max_rows is ignored — we always return the full result.
+}
+
+bool parse_close(const std::string& body, CloseHead& out) {
+    if (body.empty()) return false;
+    out.kind = static_cast<uint8_t>(body[0]);
+    size_t i = 1;
+    return read_cstring(body, i, out.name);
+}
+
+void publish_query(audit::AuditPipeline& p,
+                   const std::string& ip, int port,
+                   const std::string& user, const std::string& sql) {
+    audit::Event e;
+    e.kind = audit::EventKind::Query;
+    e.src_ip = ip;
+    e.src_port = port;
+    e.user = user;
+    e.sql = sql;
+    p.publish(std::move(e));
 }
 
 }  // namespace
@@ -131,36 +198,107 @@ void run(int fd,
     }
     send_canned_session_setup(fd);
 
+    // Extended-query state. Both maps are session-local; libpq-style clients
+    // typically use the unnamed "" entry. We only track names so Bind can
+    // look up the SQL associated with a previously parsed statement.
+    std::unordered_map<std::string, std::string> statements;  // name -> SQL
+    std::unordered_map<std::string, std::string> portals;     // portal -> stmt
+
     for (;;) {
         auto msg = wire::read_frontend(fd);
         if (!msg) break;
-        if (msg->type == wire::FrontendType::Terminate) {
-            audit::Event e;
-            e.kind = audit::EventKind::Terminate;
-            e.src_ip = src_ip;
-            e.src_port = src_port;
-            e.user = user;
-            pipeline.publish(std::move(e));
-            break;
+        switch (msg->type) {
+            case wire::FrontendType::Terminate: {
+                audit::Event e;
+                e.kind = audit::EventKind::Terminate;
+                e.src_ip = src_ip;
+                e.src_port = src_port;
+                e.user = user;
+                pipeline.publish(std::move(e));
+                goto end_loop;
+            }
+            case wire::FrontendType::Query: {
+                publish_query(pipeline, src_ip, src_port, user, msg->payload);
+                serve_query(fd, msg->payload);
+                break;
+            }
+            case wire::FrontendType::Parse: {
+                ParseHead ph;
+                if (parse_parse(msg->payload, ph)) {
+                    statements[ph.statement_name] = ph.query;
+                    if (!ph.query.empty()) {
+                        publish_query(pipeline, src_ip, src_port, user, ph.query);
+                    }
+                }
+                wire::write_all(fd, wire::parse_complete());
+                break;
+            }
+            case wire::FrontendType::Bind: {
+                BindHead bh;
+                if (parse_bind(msg->payload, bh)) {
+                    portals[bh.portal_name] = bh.statement_name;
+                }
+                wire::write_all(fd, wire::bind_complete());
+                break;
+            }
+            case wire::FrontendType::Describe: {
+                DescHead dh;
+                if (!parse_describe(msg->payload, dh)) break;
+                if (dh.kind == 'S') {
+                    // Statement: ParameterDescription (no params) + RowDescription.
+                    wire::write_all(fd, wire::parameter_description({}));
+                }
+                // Portal or statement: we always look like a single text column.
+                wire::write_all(fd, wire::row_description_text("?column?"));
+                break;
+            }
+            case wire::FrontendType::Execute: {
+                ExecHead eh;
+                std::string sql;
+                if (parse_execute(msg->payload, eh)) {
+                    auto pit = portals.find(eh.portal_name);
+                    if (pit != portals.end()) {
+                        auto sit = statements.find(pit->second);
+                        if (sit != statements.end()) sql = sit->second;
+                    }
+                }
+                if (sql.empty()) {
+                    wire::write_all(fd, wire::empty_query_response());
+                } else {
+                    wire::write_all(fd, wire::data_row_single_text("1"));
+                    wire::write_all(fd, wire::command_complete("SELECT 1"));
+                }
+                break;
+            }
+            case wire::FrontendType::Close: {
+                CloseHead ch;
+                if (parse_close(msg->payload, ch)) {
+                    if (ch.kind == 'S') statements.erase(ch.name);
+                    else if (ch.kind == 'P') portals.erase(ch.name);
+                }
+                wire::write_all(fd, wire::close_complete());
+                break;
+            }
+            case wire::FrontendType::Sync: {
+                wire::write_all(fd, wire::ready_for_query('I'));
+                break;
+            }
+            case wire::FrontendType::Flush:
+                // We never buffer responses, so Flush is a no-op.
+                break;
+            case wire::FrontendType::Password:
+                // Stray password mid-session — ignore.
+                break;
+            case wire::FrontendType::Unknown:
+            default:
+                wire::write_all(fd,
+                                wire::error_response("ERROR", "0A000",
+                                                     "feature not supported"));
+                wire::write_all(fd, wire::ready_for_query('I'));
+                break;
         }
-        if (msg->type == wire::FrontendType::Query) {
-            audit::Event e;
-            e.kind = audit::EventKind::Query;
-            e.src_ip = src_ip;
-            e.src_port = src_port;
-            e.user = user;
-            e.sql = msg->payload;
-            pipeline.publish(std::move(e));
-            serve_query(fd, msg->payload);
-            continue;
-        }
-        // Unknown / unsupported frontend message types: be polite, send
-        // an error response, then keep the connection open.
-        wire::write_all(fd,
-                        wire::error_response("ERROR", "0A000",
-                                             "feature not supported"));
-        wire::write_all(fd, wire::ready_for_query('I'));
     }
+end_loop:;
 
     publish_simple(pipeline, audit::EventKind::ConnectionClosed, src_ip, src_port);
     ::close(fd);

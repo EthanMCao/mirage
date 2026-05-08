@@ -16,9 +16,16 @@ constexpr int32_t kProtocolVersionCancelRequest = 80877102;
 constexpr int32_t kProtocolVersionGSSEncRequest = 80877104;
 
 enum class FrontendType : uint8_t {
-    Password,   // 'p'
-    Query,      // 'Q'
-    Terminate,  // 'X'
+    Password,    // 'p'
+    Query,       // 'Q' simple query
+    Terminate,   // 'X'
+    Parse,       // 'P' extended query: prepare statement
+    Bind,        // 'B' bind portal to statement
+    Describe,    // 'D' describe portal or statement
+    Execute,     // 'E' run portal
+    Close,       // 'C' close portal or statement
+    Sync,        // 'S' end of extended-query batch
+    Flush,       // 'H' flush
     Unknown,
 };
 
@@ -27,9 +34,14 @@ struct StartupMessage {
     std::unordered_map<std::string, std::string> parameters;
 };
 
+// payload semantics by type:
+//   Password / Query: textual content with the trailing NUL stripped.
+//   Parse / Bind / Describe / Execute / Close: raw binary body so the
+//     caller can decode the per-message structure.
+//   Terminate / Sync / Flush / Unknown: empty.
 struct FrontendMessage {
     FrontendType type{FrontendType::Unknown};
-    std::string payload;  // password text for 'p', SQL for 'Q', empty for 'X'
+    std::string payload;
 };
 
 // Reads the very first message a client sends. Transparently handles SSL/GSS
@@ -55,6 +67,16 @@ std::vector<uint8_t> error_response(const std::string& severity,
                                     const std::string& message);
 std::vector<uint8_t> single_text_row(const std::string& column_name,
                                      const std::string& value);
+
+// Extended-query backend responses.
+std::vector<uint8_t> parse_complete();
+std::vector<uint8_t> bind_complete();
+std::vector<uint8_t> close_complete();
+std::vector<uint8_t> no_data();
+std::vector<uint8_t> portal_suspended();
+std::vector<uint8_t> parameter_description(const std::vector<int32_t>& oids);
+std::vector<uint8_t> row_description_text(const std::string& column_name);
+std::vector<uint8_t> data_row_single_text(const std::string& value);
 
 // Best-effort write-all on a blocking socket. Returns false on error/closed.
 bool write_all(int fd, const std::vector<uint8_t>& bytes);

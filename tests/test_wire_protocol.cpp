@@ -138,6 +138,75 @@ void test_backend_frame_layouts() {
     EXPECT_EQ(err[0], 'E');
 }
 
+void test_extended_query_message_tags() {
+    auto send_one = [](uint8_t tag, const std::vector<uint8_t>& body) {
+        Pair p;
+        std::vector<uint8_t> frame;
+        frame.push_back(tag);
+        write_be32(frame, static_cast<int32_t>(4 + body.size()));
+        frame.insert(frame.end(), body.begin(), body.end());
+        ::send(p.writer, frame.data(), frame.size(), 0);
+        ::close(p.writer);
+        p.writer = -1;
+        return mirage::wire::read_frontend(p.reader);
+    };
+
+    {
+        // Parse: stmt_name="" + query="select 1" + int16 num_params=0
+        std::vector<uint8_t> body{0};
+        const std::string q = "select 1";
+        body.insert(body.end(), q.begin(), q.end());
+        body.push_back(0);
+        body.push_back(0); body.push_back(0);
+        auto m = send_one('P', body);
+        ASSERT_TRUE(m.has_value());
+        EXPECT_TRUE(m->type == mirage::wire::FrontendType::Parse);
+        // payload contains the raw body
+        EXPECT_TRUE(m->payload.find("select 1") != std::string::npos);
+    }
+    {
+        auto m = send_one('S', {});
+        ASSERT_TRUE(m.has_value());
+        EXPECT_TRUE(m->type == mirage::wire::FrontendType::Sync);
+    }
+    {
+        auto m = send_one('H', {});
+        ASSERT_TRUE(m.has_value());
+        EXPECT_TRUE(m->type == mirage::wire::FrontendType::Flush);
+    }
+    {
+        auto m = send_one('B', std::vector<uint8_t>{0, 0});
+        ASSERT_TRUE(m.has_value());
+        EXPECT_TRUE(m->type == mirage::wire::FrontendType::Bind);
+    }
+}
+
+void test_extended_query_backend_frames() {
+    auto pc = mirage::wire::parse_complete();
+    EXPECT_EQ(pc.size(), 5u);
+    EXPECT_EQ(pc[0], '1');
+
+    auto bc = mirage::wire::bind_complete();
+    EXPECT_EQ(bc[0], '2');
+
+    auto cc = mirage::wire::close_complete();
+    EXPECT_EQ(cc[0], '3');
+
+    auto nd = mirage::wire::no_data();
+    EXPECT_EQ(nd[0], 'n');
+
+    auto pd = mirage::wire::parameter_description({23, 25});
+    EXPECT_EQ(pd[0], 't');
+    // 1 tag + 4 length + 2 count + 2*4 oids
+    EXPECT_EQ(pd.size(), 1u + 4u + 2u + 8u);
+
+    auto rd = mirage::wire::row_description_text("col");
+    EXPECT_EQ(rd[0], 'T');
+
+    auto dr = mirage::wire::data_row_single_text("hello");
+    EXPECT_EQ(dr[0], 'D');
+}
+
 }  // namespace
 
 int main() {
@@ -147,5 +216,7 @@ int main() {
     test_read_query_message();
     test_read_terminate();
     test_backend_frame_layouts();
+    test_extended_query_message_tags();
+    test_extended_query_backend_frames();
     return mirage::test::finalize("wire_protocol");
 }
